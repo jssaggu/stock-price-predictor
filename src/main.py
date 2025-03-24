@@ -29,61 +29,57 @@ def load_existing_data(file_path):
             return pd.DataFrame()
     return pd.DataFrame()
 
-def save_to_excel(predictions, file_path):
-    """Save predictions to Excel file with timestamp."""
-    # Load existing data
-    existing_data = load_existing_data(file_path)
-    
-    # Create new data with timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    new_data = []
-    
-    for stock, data in predictions.items():
-        new_data.append({
-            'Timestamp': timestamp,
-            'Stock': stock,
-            'Predicted Price': data['price'],
-            'Confidence': f"{data['confidence']*100:.2f}%",
-            'RSI': data['rsi'],
-            'Time Horizon': data['time_horizon'],
-            'Reasoning': data['reasoning']
-        })
-    
-    # Convert new data to DataFrame
-    new_df = pd.DataFrame(new_data)
-    
-    # Combine with existing data
-    combined_df = pd.concat([existing_data, new_df], ignore_index=True)
-    
-    # Save to Excel with formatting
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-        combined_df.to_excel(writer, index=False, sheet_name='Stock Predictions')
+def save_to_excel(predictions, output_file):
+    """Save predictions to Excel with separate sheets for each stock"""
+    # Create a new Excel writer
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        # Create a summary sheet with all stocks
+        summary_data = []
+        for stock, data in predictions.items():
+            if isinstance(data, dict):
+                summary_data.append({
+                    'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'Stock': stock,
+                    'Predicted Price': data.get('price', 0),
+                    'Confidence': data.get('confidence', 0),
+                    'RSI': data.get('rsi', 0),
+                    'Time Horizon': data.get('time_horizon', 'N/A'),
+                    'Reasoning': data.get('reasoning', 'Error occurred'),
+                    'Recommendation': data.get('recommendation', 'ERROR')
+                })
         
-        # Get the workbook and the worksheet
-        workbook = writer.book
-        worksheet = writer.sheets['Stock Predictions']
+        # Save summary sheet
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
         
-        # Format column widths
-        for idx, col in enumerate(combined_df.columns):
-            max_length = max(
-                combined_df[col].astype(str).apply(len).max(),
-                len(str(col))
-            )
-            worksheet.column_dimensions[chr(65 + idx)].width = min(max_length + 2, 100)
-        
-        # Format timestamp column
-        for cell in worksheet['A'][1:]:
-            cell.number_format = 'yyyy-mm-dd hh:mm:ss'
+        # Create individual sheets for each stock
+        for stock, data in predictions.items():
+            if isinstance(data, dict):
+                # Create a DataFrame for this stock
+                stock_data = pd.DataFrame([{
+                    'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'Predicted Price': data.get('price', 0),
+                    'Confidence': data.get('confidence', 0),
+                    'RSI': data.get('rsi', 0),
+                    'Time Horizon': data.get('time_horizon', 'N/A'),
+                    'Reasoning': data.get('reasoning', 'Error occurred'),
+                    'Recommendation': data.get('recommendation', 'ERROR')
+                }])
+                
+                # Save to a sheet named after the stock
+                stock_data.to_excel(writer, sheet_name=stock, index=False)
 
 def main():
     parser = argparse.ArgumentParser(description='Stock Price Predictor')
     parser.add_argument('--stocks', nargs='+', required=True, help='List of stock symbols to analyze')
-    parser.add_argument('--output', default='results.json', help='Output JSON file path')
+    parser.add_argument('--output', default='results.json', help='Output file path for results')
     args = parser.parse_args()
 
+    # Initialize the stock agent
     agent = StockAgent()
-    predictions = {}
 
+    # Analyze each stock
+    predictions = {}
     print("\n=== Stock Analysis Results ===\n")
     print("Predictions:\n")
 
@@ -91,45 +87,51 @@ def main():
         try:
             prediction = agent.predict(stock)
             predictions[stock] = prediction
-            
             print(f"{stock}:")
             print(f"  Predicted Price: ${prediction['price']:.2f}")
-            print(f"  Confidence: {prediction['confidence']*100:.2f}%")
+            print(f"  Confidence: {prediction['confidence']:.2f}%")
             print(f"  RSI: {prediction['rsi']:.2f}")
             print(f"  Time Horizon: {prediction['time_horizon']}")
             print(f"  Reasoning: {prediction['reasoning']}\n")
         except Exception as e:
             print(f"Error analyzing {stock}: {str(e)}\n")
+            predictions[stock] = {
+                'price': 0,
+                'confidence': 0,
+                'rsi': 0,
+                'time_horizon': 'N/A',
+                'reasoning': f'Error: {str(e)}',
+                'recommendation': 'ERROR'
+            }
 
-    # Save to JSON
+    # Save results to JSON
     with open(args.output, 'w') as f:
         json.dump(predictions, f, indent=2)
-    
-    # Save to Excel on desktop
-    desktop_path = get_desktop_path()
-    excel_file = os.path.join(desktop_path, 'stock_predictions.xlsx')
-    save_to_excel(predictions, excel_file)
     print(f"\nResults saved to {args.output}")
+
+    # Save results to Excel
+    excel_file = os.path.expanduser('~/OneDrive/stock_predictions.xlsx')
+    save_to_excel(predictions, excel_file)
     print(f"Results also saved to Excel file: {excel_file}")
 
-    # Generate recommendations
-    buy_stocks = [stock for stock, pred in predictions.items() if pred['confidence'] >= 0.7]
-    hold_stocks = [stock for stock, pred in predictions.items() if 0.5 <= pred['confidence'] < 0.7]
-    sell_stocks = [stock for stock, pred in predictions.items() if pred['confidence'] < 0.5]
-
+    # Print recommendations
     print("\nRecommendations:\n")
-    if buy_stocks:
-        print("BUY:")
-        for stock in buy_stocks:
-            print(f"  - {stock}")
-    if hold_stocks:
-        print("HOLD:")
-        for stock in hold_stocks:
-            print(f"  - {stock}")
-    if sell_stocks:
-        print("SELL:")
-        for stock in sell_stocks:
-            print(f"  - {stock}")
+    recommendations = {
+        'BUY': [],
+        'HOLD': [],
+        'SELL': [],
+        'ERROR': []
+    }
+    
+    for stock, data in predictions.items():
+        if isinstance(data, dict):
+            recommendations[data.get('recommendation', 'ERROR')].append(stock)
+    
+    for action, stocks in recommendations.items():
+        if stocks and action != 'ERROR':
+            print(f"{action}:")
+            for stock in stocks:
+                print(f"  - {stock}")
 
 if __name__ == "__main__":
     main() 

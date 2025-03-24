@@ -9,6 +9,7 @@ import os
 from dotenv import load_dotenv
 import openai
 import json
+import re
 
 class StockAgent:
     def __init__(self):
@@ -28,115 +29,152 @@ class StockAgent:
         if not openai.api_key:
             raise ValueError("OpenAI API key not found in environment variables")
     
-    def _calculate_rsi(self, data, periods=14):
-        """Calculate RSI for the given data."""
-        delta = data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
+    def _calculate_rsi(self, prices, periods=14):
+        """Calculate RSI for a series of prices."""
+        try:
+            # Calculate price changes
+            delta = prices.diff()
+            
+            # Separate gains and losses
+            gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+            
+            # Calculate RS and RSI
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            return rsi.iloc[-1]
+        except Exception as e:
+            print(f"Error calculating RSI: {str(e)}")
+            return 50  # Return neutral RSI on error
     
     def _get_stock_data(self, symbol):
         """Get historical stock data and current price."""
         try:
+            # Get stock data
             stock = yf.Ticker(symbol)
-            hist = stock.history(period="1y")
-            current_price = stock.info.get('regularMarketPrice', 0)
-            return hist, current_price
+            hist_data = stock.history(period="1y")
+            
+            if hist_data.empty:
+                raise ValueError(f"No data found for {symbol}")
+            
+            # Calculate current price
+            current_price = hist_data['Close'].iloc[-1]
+            
+            # Calculate price changes
+            price_changes = hist_data['Close'].pct_change().dropna().tolist()
+            
+            # Calculate average volume
+            avg_volume = hist_data['Volume'].mean()
+            
+            # Calculate volatility
+            volatility = hist_data['Close'].pct_change().std()
+            
+            return {
+                'Close': hist_data['Close'],
+                'current_price': current_price,
+                'price_changes': price_changes,
+                'volume': avg_volume,
+                'volatility': volatility
+            }
+            
         except Exception as e:
-            raise Exception(f"Error fetching data for {symbol}: {str(e)}")
+            print(f"Error fetching data for {symbol}: {str(e)}")
+            return None
     
-    def _prepare_context(self, symbol, hist_data, current_price):
-        """Prepare context for the prediction model."""
-        # Calculate RSI
-        rsi = self._calculate_rsi(hist_data).iloc[-1]
-        
-        # Get recent price changes
-        recent_prices = hist_data['Close'].tail(5)
-        price_changes = recent_prices.pct_change()
-        
-        # Prepare market data
-        market_data = {
-            'current_price': current_price,
-            'rsi': rsi,
-            'price_changes': price_changes.tolist(),
-            'volume': hist_data['Volume'].tail(5).mean(),
-            'volatility': hist_data['Close'].pct_change().std()
-        }
-        
-        return market_data
+    def _prepare_context(self, symbol, stock_data, rsi):
+        """Prepare context for the model."""
+        return (
+            f"Based on the following market data for {symbol}, provide a price prediction:\n"
+            f"Current Price: ${stock_data['current_price']:.2f}\n"
+            f"RSI: {rsi:.2f}\n"
+            "Recent Price Changes: " + str([f"{x:.2%}" for x in stock_data['price_changes'][-5:] if pd.notnull(x)]) + "\n"
+            f"Average Volume: {stock_data['volume']:.0f}\n"
+            f"Volatility: {stock_data['volatility']:.2%}\n\n"
+            "Please provide a prediction in EXACTLY this JSON format:\n"
+            "{\n"
+            '    "price": 000.00,\n'
+            '    "confidence": 0.00,\n'
+            '    "time_horizon": "X months",\n'
+            '    "reasoning": "Your detailed analysis here"\n'
+            "}"
+        )
     
-    def predict(self, symbol):
-        """Generate a prediction for a given stock symbol."""
+    def predict(self, stock_symbol):
+        """Generate a prediction for a given stock."""
         try:
             # Get stock data
-            hist_data, current_price = self._get_stock_data(symbol)
+            stock_data = self._get_stock_data(stock_symbol)
+            if stock_data is None:
+                raise ValueError(f"Could not fetch data for {stock_symbol}")
+
+            # Calculate RSI
+            rsi = self._calculate_rsi(stock_data['Close'])
             
-            # Prepare context
-            market_data = self._prepare_context(symbol, hist_data, current_price)
+            # Prepare context for the model
+            context = self._prepare_context(stock_symbol, stock_data, rsi)
             
-            # Prepare prompt for the model
-            prompt = (
-                f"Based on the following market data for {symbol}, provide a price prediction:\n"
-                f"Current Price: ${market_data['current_price']:.2f}\n"
-                f"RSI: {market_data['rsi']:.2f}\n"
-                "Recent Price Changes: " + str([f"{x:.2%}" for x in market_data['price_changes'] if pd.notnull(x)]) + "\n"
-                f"Average Volume: {market_data['volume']:.0f}\n"
-                f"Volatility: {market_data['volatility']:.2%}\n\n"
-                "Please provide a prediction in EXACTLY this JSON format:\n"
-                "{\n"
-                '    "price": 000.00,\n'
-                '    "confidence": 0.00,\n'
-                '    "time_horizon": "X months",\n'
-                '    "reasoning": "Your detailed analysis here"\n'
-                "}"
-            )
+            # Try different models in order of preference
+            models = self.config['openai']['models']
+            last_error = None
             
-            # Get prediction from OpenAI
-            response = openai.chat.completions.create(
-                model=self.config['openai']['model'],
-                messages=[
-                    {"role": "system", "content": "You are a stock market analyst. Always respond with valid JSON containing exactly these keys: price (float), confidence (float 0-1), time_horizon (string), reasoning (string)."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
+            for model in models:
+                try:
+                    # Create OpenAI client
+                    client = openai.OpenAI()
+                    
+                    # Generate prediction
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": "You are a stock market analyst. Provide price predictions in a strict JSON format with keys: price, confidence, time_horizon, reasoning"},
+                            {"role": "user", "content": context}
+                        ],
+                        temperature=0.7,
+                        max_tokens=500
+                    )
+                    
+                    # Parse the response
+                    try:
+                        prediction = json.loads(response.choices[0].message.content)
+                    except json.JSONDecodeError:
+                        # If JSON parsing fails, try to extract values using regex
+                        content = response.choices[0].message.content
+                        price_match = re.search(r'\$(\d+\.?\d*)', content)
+                        confidence_match = re.search(r'(\d+\.?\d*)%', content)
+                        time_horizon_match = re.search(r'time horizon:?\s*([^.,]+)', content, re.IGNORECASE)
+                        reasoning_match = re.search(r'reasoning:?\s*([^.,]+)', content, re.IGNORECASE)
+                        
+                        prediction = {
+                            'price': float(price_match.group(1)) if price_match else stock_data['current_price'],
+                            'confidence': float(confidence_match.group(1)) if confidence_match else 0.5,
+                            'time_horizon': time_horizon_match.group(1).strip() if time_horizon_match else '1 month',
+                            'reasoning': reasoning_match.group(1).strip() if reasoning_match else 'No reasoning provided'
+                        }
+                    
+                    # Add RSI to the prediction
+                    prediction['rsi'] = rsi
+                    
+                    # Add recommendation based on confidence
+                    confidence = prediction['confidence']
+                    if confidence >= self.config['recommendations']['buy_threshold']:
+                        prediction['recommendation'] = 'BUY'
+                    elif confidence <= self.config['recommendations']['sell_threshold']:
+                        prediction['recommendation'] = 'SELL'
+                    else:
+                        prediction['recommendation'] = 'HOLD'
+                    
+                    return prediction
+                    
+                except Exception as e:
+                    last_error = e
+                    continue
             
-            # Parse the response
-            prediction_text = response.choices[0].message.content
-            try:
-                # Try to parse as JSON first
-                prediction = json.loads(prediction_text)
-            except json.JSONDecodeError:
-                # If JSON parsing fails, try to extract the values using string manipulation
-                import re
+            if last_error:
+                raise last_error
                 
-                # More robust regex patterns
-                price_pattern = r'["\']?price["\']?\s*:\s*(\d+\.?\d*)'
-                confidence_pattern = r'["\']?confidence["\']?\s*:\s*(\d*\.?\d*)'
-                time_horizon_pattern = r'["\']?time_horizon["\']?\s*:\s*["\']([^"\']+)["\']'
-                reasoning_pattern = r'["\']?reasoning["\']?\s*:\s*["\']([^"\']+)["\']'
-                
-                price_match = re.search(price_pattern, prediction_text, re.IGNORECASE)
-                confidence_match = re.search(confidence_pattern, prediction_text, re.IGNORECASE)
-                time_horizon_match = re.search(time_horizon_pattern, prediction_text, re.IGNORECASE)
-                reasoning_match = re.search(reasoning_pattern, prediction_text, re.IGNORECASE)
-                
-                prediction = {
-                    'price': float(price_match.group(1)) if price_match else current_price * 1.05,  # 5% increase as fallback
-                    'confidence': float(confidence_match.group(1)) if confidence_match else 0.5,
-                    'time_horizon': time_horizon_match.group(1) if time_horizon_match else "2 months",
-                    'reasoning': reasoning_match.group(1) if reasoning_match else prediction_text
-                }
-            
-            # Add RSI to the prediction
-            prediction['rsi'] = market_data['rsi']
-            
-            return prediction
-            
         except Exception as e:
-            raise Exception(f"Error generating prediction for {symbol}: {str(e)}")
+            raise Exception(f"Error generating prediction for {stock_symbol}: {str(e)}")
     
     def _get_news(self, symbol: str) -> List[Dict[str, Any]]:
         """
@@ -184,7 +222,7 @@ class StockAgent:
             return None
             
         rsi = self._calculate_rsi(hist)
-        context = self._prepare_context(symbol, hist, current_price)
+        context = self._prepare_context(symbol, hist, rsi)
         
         client = openai.OpenAI()
         for model in self.config['openai']['models']:
