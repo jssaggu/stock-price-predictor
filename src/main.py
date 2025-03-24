@@ -31,6 +31,18 @@ def load_existing_data(file_path):
 
 def save_to_excel(predictions, output_file):
     """Save predictions to Excel with separate sheets for each stock"""
+    try:
+        # Try to load existing Excel file
+        existing_data = {}
+        if os.path.exists(output_file):
+            with pd.ExcelFile(output_file) as xls:
+                for sheet_name in xls.sheet_names:
+                    if sheet_name != 'Summary':
+                        existing_data[sheet_name] = pd.read_excel(xls, sheet_name)
+    except Exception as e:
+        print(f"Warning: Could not load existing Excel file: {str(e)}")
+        existing_data = {}
+
     # Create a new Excel writer
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         # Create a summary sheet with all stocks
@@ -55,8 +67,8 @@ def save_to_excel(predictions, output_file):
         # Create individual sheets for each stock
         for stock, data in predictions.items():
             if isinstance(data, dict):
-                # Create a DataFrame for this stock
-                stock_data = pd.DataFrame([{
+                # Create new data for this stock
+                new_data = pd.DataFrame([{
                     'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'Predicted Price': data.get('price', 0),
                     'Confidence': data.get('confidence', 0),
@@ -66,8 +78,12 @@ def save_to_excel(predictions, output_file):
                     'Recommendation': data.get('recommendation', 'ERROR')
                 }])
                 
-                # Save to a sheet named after the stock
-                stock_data.to_excel(writer, sheet_name=stock, index=False)
+                # Combine with existing data if available
+                if stock in existing_data:
+                    combined_data = pd.concat([existing_data[stock], new_data], ignore_index=True)
+                    combined_data.to_excel(writer, sheet_name=stock, index=False)
+                else:
+                    new_data.to_excel(writer, sheet_name=stock, index=False)
 
 def main():
     parser = argparse.ArgumentParser(description='Stock Price Predictor')
