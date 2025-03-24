@@ -1,0 +1,23 @@
+openai:
+  models:
+    - gpt-4-turbo-preview
+    - gpt-4
+    - gpt-3.5-turbo
+  temperature: 0.7
+  max_tokens: 1000
+
+news_api:
+  language: en
+  sort_by: publishedAt
+  page_size: 100
+
+stock_analysis:
+  prediction_threshold: 0.7
+  confidence_threshold: 0.7
+  max_stocks_per_batch: 10
+  historical_data_days: 30
+
+recommendations:
+  buy_threshold: 0.8
+  sell_threshold: 0.2
+  hold_threshold: 0.5 
