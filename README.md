@@ -85,4 +85,4 @@ MIT License
 
 ## Author
 
-Jaspreet Singh Saggu 
+Jasvinder Singh Saggu 
