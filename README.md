@@ -7,8 +7,10 @@ An AI-powered stock price prediction tool that uses RSI (Relative Strength Index
 - RSI-based technical analysis
 - Multi-stock analysis support
 - Configurable prediction parameters
-- JSON output format
+- JSON and Excel output formats
 - Support for major tech stocks
+- Historical prediction tracking
+- Confidence-based recommendations
 
 ## Installation
 
@@ -48,6 +50,22 @@ python src/main.py --stocks AAPL NVDA AMD --output results.json
 - `--stocks`: Space-separated list of stock symbols to analyze
 - `--output`: Path to save the analysis results (default: results.json)
 
+### Output
+
+The program generates two types of output:
+1. JSON file with detailed analysis results
+2. Excel file (`stock_predictions.xlsx`) with timestamped predictions for historical tracking
+
+The Excel file includes:
+- Timestamp of each prediction
+- Stock symbol
+- Predicted price
+- Confidence level
+- RSI value
+- Time horizon
+- Detailed reasoning
+- Recommendation (Buy/Hold/Sell)
+
 ## Configuration
 
 Edit `config/config.yaml` to customize:
@@ -55,6 +73,8 @@ Edit `config/config.yaml` to customize:
 - Analysis thresholds
 - Time horizons
 - Confidence levels
+- RSI periods
+- News API settings
 
 ## Project Structure
 
@@ -78,6 +98,7 @@ stock-price-predictor/
 - numpy
 - openai
 - pyyaml
+- openpyxl (for Excel output)
 
 ## License
 
